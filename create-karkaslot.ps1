@@ -52,27 +52,20 @@ volumes:
 Write-File (Join-Path $Root "README.md") @'
 # KarkasLot Windows kurulum paketi
 
-Bu repository, Windows üzerinde tek PowerShell betiğiyle oluşturulan bir karkas işleme ve stok yönetimi uygulaması üretir.
+Windows üzerinde tek PowerShell betiğiyle çalışan, karkas işleme, stok ve kalite takibi için başlangıç projesi üretir.
 
-## İçerik
+## Özellikler
 
 - ASP.NET Core Web API
 - PostgreSQL
 - React + Vite frontend
-- JWT tabanlı login/register
-- Rol bazlı erişim (Admin, Manager, Warehouse, Production, Quality, Accounting)
-- Lot / stok / sevk / fatura başlangıç akışı
-- HACCP ve kalite takibi
-- Corrective action / quality issue takibi
-- Docker ile veritabanı yönetimi
-
-## Gereksinimler
-
-- Windows 10/11
-- PowerShell 5.1 veya PowerShell 7
-- .NET 8 SDK
-- Node.js 18+
-- Docker Desktop
+- JWT tabanlı auth
+- Rol bazlı erişim
+- Lot / stok / sevk / müşteri / fatura akışı
+- HACCP kontrol takibi
+- Quality issue ve corrective action takibi
+- FEFO ve stok alarm takibi
+- Docker ile DB kurulumu
 
 ## Kurulum
 
@@ -81,24 +74,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\create-karkaslot.ps1
 ```
 
-Script şunları yapar:
-
-- `karkaslot` klasörünü oluşturur
-- PostgreSQL Docker konteynerini hazırlar
-- ASP.NET Core API ve React frontend oluşturur
-- JWT auth, rol ve kalite/HACCP yapısını ekler
-- `karkaslot.zip` dosyasını üretir
-
 ## Çalıştırma
-
-API:
 
 ```powershell
 cd .\karkaslot\backend\KarkasLot.Api
 dotnet run --urls http://localhost:5159
 ```
 
-Yeni terminalde frontend:
+Yeni terminalde:
 
 ```powershell
 cd .\karkaslot\frontend\karkaslot-web
@@ -111,31 +94,6 @@ Adresler:
 - API: http://localhost:5159
 - Swagger: http://localhost:5159/swagger
 - PostgreSQL: localhost:5432
-
-## İlk hesap oluşturma
-
-```powershell
-Invoke-RestMethod -Method Post -Uri "http://localhost:5159/api/auth/register" -ContentType "application/json" -Body '{"username":"admin","password":"123456","fullName":"Admin Kullanıcı","email":"admin@test.com"}'
-```
-
-## Giriş
-
-```powershell
-Invoke-RestMethod -Method Post -Uri "http://localhost:5159/api/auth/login" -ContentType "application/json" -Body '{"username":"admin","password":"123456"}'
-```
-
-## Durdurma
-
-```powershell
-cd .\karkaslot
-docker compose down
-```
-
-Veritabanı verileriyle birlikte silmek için:
-
-```powershell
-docker compose down -v
-```
 '@
 
 Push-Location (Join-Path $Root "backend")
@@ -173,7 +131,6 @@ Write-File (Join-Path $Api "appsettings.json") @'
 Write-File (Join-Path $Api "Program.cs") @'
 using System.Text;
 using KarkasLot.Api.Data;
-using KarkasLot.Api.Models;
 using KarkasLot.Api.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -185,8 +142,8 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services.AddCors(options =>
 {
@@ -197,7 +154,6 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddScoped<JwtTokenService>();
-
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -236,7 +192,6 @@ using (var scope = app.Services.CreateScope())
             new Role { Name = "Quality" },
             new Role { Name = "Accounting" }
         );
-        db.SaveChanges();
     }
 
     if (!db.Products.Any())
@@ -244,11 +199,41 @@ using (var scope = app.Services.CreateScope())
         db.Products.AddRange(
             new Product { Name = "Karkas Et", Unit = "kg" },
             new Product { Name = "Kuşbaşı", Unit = "kg" },
-            new Product { Name = "Kıyma", Unit = "kg" }
+            new Product { Name = "Kıyma", Unit = "kg" },
+            new Product { Name = "Dana Fileto", Unit = "kg" }
         );
+
         db.Suppliers.Add(new Supplier { Name = "Varsayılan Tedarikçi" });
+
+        db.Customers.Add(new Customer { Name = "İstanbul Market", TaxNumber = "0000000000", Address = "İstanbul" });
         db.SaveChanges();
+
+        var productIds = db.Products.OrderBy(x => x.Id).Select(x => x.Id).ToList();
+        var supplierId = db.Suppliers.First().Id;
+        var now = DateTime.UtcNow;
+
+        db.Lots.AddRange(
+            new Lot { LotNo = "LOT-1001", ProductId = productIds[0], SupplierId = supplierId, Amount = 120, Unit = "kg", ExpiryDate = now.AddDays(14), Status = "Kullanılabilir", SourceRef = "İlk giriş" },
+            new Lot { LotNo = "LOT-1002", ProductId = productIds[1], SupplierId = supplierId, Amount = 90, Unit = "kg", ExpiryDate = now.AddDays(7), Status = "Kullanılabilir", SourceRef = "İlk giriş" },
+            new Lot { LotNo = "LOT-1003", ProductId = productIds[2], SupplierId = supplierId, Amount = 80, Unit = "kg", ExpiryDate = now.AddDays(21), Status = "Kullanılabilir", SourceRef = "İlk giriş" }
+        );
+
+        db.StockMovements.AddRange(
+            new StockMovement { LotId = 1, MovementType = "IN", Qty = 120, RelatedRef = "seed-1" },
+            new StockMovement { LotId = 2, MovementType = "IN", Qty = 90, RelatedRef = "seed-2" },
+            new StockMovement { LotId = 3, MovementType = "IN", Qty = 80, RelatedRef = "seed-3" }
+        );
+
+        db.HaccpChecks.AddRange(
+            new HaccpCheck { LotId = 1, CheckType = "Sıcaklık", Value = 4, LimitMin = 0, LimitMax = 5, Result = "Normal" },
+            new HaccpCheck { LotId = 2, CheckType = "PH", Value = 5.8m, LimitMin = 5.5m, LimitMax = 6.5m, Result = "Normal" }
+        );
+
+        db.QualityIssues.Add(new QualityIssue { LotId = 2, IssueType = "Ambalaj", Description = "Dış ambalaj hasarı tespit edildi.", Status = "Açık" });
+        db.CorrectiveActions.Add(new CorrectiveAction { QualityIssueId = 1, ActionText = "Ambalaj kontrolü ve yeniden paketleme yapılacak.", ResponsibleUser = "Quality", DueDate = now.AddDays(2) });
     }
+
+    db.SaveChanges();
 }
 
 if (app.Environment.IsDevelopment())
@@ -261,7 +246,6 @@ app.UseCors("web");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
-
 app.Run();
 '@
 
@@ -299,12 +283,11 @@ public class Lot
     public int ProductId { get; set; }
     public int? SupplierId { get; set; }
     public decimal Amount { get; set; }
-    public DateTime ReceivedAt { get; set; } = DateTime.UtcNow;
     public string Unit { get; set; } = "kg";
     public string Status { get; set; } = "Kullanılabilir";
     public DateTime? ExpiryDate { get; set; }
+    public DateTime ReceivedAt { get; set; } = DateTime.UtcNow;
     public string? SourceRef { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public Product? Product { get; set; }
     public Supplier? Supplier { get; set; }
 }
@@ -321,6 +304,17 @@ public class StockMovement
     public string? RelatedRef { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public Lot? Lot { get; set; }
+}
+'@
+Write-File (Join-Path $Api "Models\Customer.cs") @'
+namespace KarkasLot.Api.Models;
+
+public class Customer
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string TaxNumber { get; set; } = string.Empty;
+    public string Address { get; set; } = string.Empty;
 }
 '@
 Write-File (Join-Path $Api "Models\Shipment.cs") @'
@@ -348,17 +342,6 @@ public class ShipmentItem
     public Lot? Lot { get; set; }
 }
 '@
-Write-File (Join-Path $Api "Models\Customer.cs") @'
-namespace KarkasLot.Api.Models;
-
-public class Customer
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = string.Empty;
-    public string TaxNumber { get; set; } = string.Empty;
-    public string Address { get; set; } = string.Empty;
-}
-'@
 Write-File (Join-Path $Api "Models\Invoice.cs") @'
 namespace KarkasLot.Api.Models;
 
@@ -366,8 +349,7 @@ public class Invoice
 {
     public int Id { get; set; }
     public string InvoiceNo { get; set; } = string.Empty;
-    public int? ShipmentId { get; set; }
-    public int? CustomerId { get; set; }
+    public int CustomerId { get; set; }
     public decimal TotalAmount { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
@@ -464,44 +446,27 @@ public class AppDbContext : DbContext
     public DbSet<Supplier> Suppliers => Set<Supplier>();
     public DbSet<Lot> Lots => Set<Lot>();
     public DbSet<StockMovement> StockMovements => Set<StockMovement>();
+    public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Shipment> Shipments => Set<Shipment>();
     public DbSet<ShipmentItem> ShipmentItems => Set<ShipmentItem>();
-    public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<HaccpCheck> HaccpChecks => Set<HaccpCheck>();
     public DbSet<QualityIssue> QualityIssues => Set<QualityIssue>();
     public DbSet<CorrectiveAction> CorrectiveActions => Set<CorrectiveAction>();
-    public DbSet<User> Users => Set<User>();
     public DbSet<Role> Roles => Set<Role>();
+    public DbSet<User> Users => Set<User>();
     public DbSet<UserRole> UserRoles => Set<UserRole>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<User>().ToTable("users");
-        modelBuilder.Entity<Role>().ToTable("roles");
-        modelBuilder.Entity<UserRole>().ToTable("user_roles");
         modelBuilder.Entity<UserRole>().HasKey(x => new { x.UserId, x.RoleId });
         modelBuilder.Entity<UserRole>().HasOne(x => x.User).WithMany(x => x.UserRoles).HasForeignKey(x => x.UserId);
         modelBuilder.Entity<UserRole>().HasOne(x => x.Role).WithMany().HasForeignKey(x => x.RoleId);
-
-        modelBuilder.Entity<Product>().ToTable("products");
-        modelBuilder.Entity<Supplier>().ToTable("suppliers");
-        modelBuilder.Entity<Lot>().ToTable("lots");
-        modelBuilder.Entity<StockMovement>().ToTable("stock_movements");
-        modelBuilder.Entity<Shipment>().ToTable("shipments");
-        modelBuilder.Entity<ShipmentItem>().ToTable("shipment_items");
-        modelBuilder.Entity<Customer>().ToTable("customers");
-        modelBuilder.Entity<Invoice>().ToTable("invoices");
-        modelBuilder.Entity<HaccpCheck>().ToTable("haccp_checks");
-        modelBuilder.Entity<QualityIssue>().ToTable("quality_issues");
-        modelBuilder.Entity<CorrectiveAction>().ToTable("corrective_actions");
-
         modelBuilder.Entity<Lot>().HasOne(x => x.Product).WithMany().HasForeignKey(x => x.ProductId);
         modelBuilder.Entity<Lot>().HasOne(x => x.Supplier).WithMany().HasForeignKey(x => x.SupplierId);
         modelBuilder.Entity<StockMovement>().HasOne(x => x.Lot).WithMany().HasForeignKey(x => x.LotId);
         modelBuilder.Entity<ShipmentItem>().HasOne(x => x.Shipment).WithMany(x => x.Items).HasForeignKey(x => x.ShipmentId);
         modelBuilder.Entity<ShipmentItem>().HasOne(x => x.Lot).WithMany().HasForeignKey(x => x.LotId);
-
         base.OnModelCreating(modelBuilder);
     }
 }
@@ -532,9 +497,9 @@ public class JwtTokenService
 
         var claims = new List<Claim>
         {
-            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
-            new(ClaimTypes.Name, user.Username),
-            new(ClaimTypes.Email, user.Email ?? string.Empty)
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim(ClaimTypes.Name, user.Username),
+            new Claim(ClaimTypes.Email, user.Email ?? string.Empty)
         };
 
         foreach (var role in roles)
@@ -615,7 +580,6 @@ public class AuthController : ControllerBase
         if (!VerifyPassword(request.Password, user.PasswordHash)) return Unauthorized("Şifre yanlış.");
 
         var roles = user.UserRoles.Where(x => x.Role != null).Select(x => x.Role!.Name).ToList();
-
         return Ok(new { token = _jwtTokenService.GenerateToken(user, roles), user = new { user.Id, user.Username, user.FullName, user.Email, roles } });
     }
 
@@ -646,66 +610,6 @@ public class AuthController : ControllerBase
 public record RegisterRequest(string Username, string Password, string? FullName, string? Email);
 public record LoginRequest(string Username, string Password);
 '@
-Write-File (Join-Path $Api "Controllers\RolesController.cs") @'
-using KarkasLot.Api.Data;
-using KarkasLot.Api.Models;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-
-namespace KarkasLot.Api.Controllers;
-
-[ApiController]
-[Route("api/[controller]")]
-[Authorize(Roles = "Admin,Manager")]
-public class RolesController : ControllerBase
-{
-    private readonly AppDbContext _context;
-    public RolesController(AppDbContext context) => _context = context;
-
-    [HttpGet]
-    public async Task<ActionResult<IEnumerable<Role>>> Get() => await _context.Roles.OrderBy(x => x.Name).ToListAsync();
-}
-'@
-Write-File (Join-Path $Api "Controllers\UsersController.cs") @'
-using KarkasLot.Api.Data;
-using KarkasLot.Api.Models;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-
-namespace KarkasLot.Api.Controllers;
-
-[ApiController]
-[Route("api/[controller]")]
-[Authorize(Roles = "Admin,Manager")]
-public class UsersController : ControllerBase
-{
-    private readonly AppDbContext _context;
-    public UsersController(AppDbContext context) => _context = context;
-
-    [HttpGet]
-    public async Task<ActionResult<IEnumerable<object>>> Get() => Ok(await _context.Users.Include(x => x.UserRoles).ThenInclude(x => x.Role).Select(x => new { x.Id, x.Username, x.FullName, x.Email, x.IsActive, Roles = x.UserRoles.Select(ur => ur.Role!.Name).ToList() }).OrderBy(x => x.Username).ToListAsync());
-
-    [HttpPost("assign-role")]
-    public async Task<ActionResult> AssignRole(AssignRoleRequest request)
-    {
-        var user = await _context.Users.FindAsync(request.UserId);
-        if (user == null) return NotFound("Kullanıcı bulunamadı.");
-        var role = await _context.Roles.FirstOrDefaultAsync(x => x.Name == request.RoleName);
-        if (role == null) return NotFound("Rol bulunamadı.");
-        var exists = await _context.UserRoles.AnyAsync(x => x.UserId == request.UserId && x.RoleId == role.Id);
-        if (!exists)
-        {
-            _context.UserRoles.Add(new UserRole { UserId = request.UserId, RoleId = role.Id });
-            await _context.SaveChangesAsync();
-        }
-        return Ok(new { message = "Rol atandı." });
-    }
-}
-
-public record AssignRoleRequest(int UserId, string RoleName);
-'@
 Write-File (Join-Path $Api "Controllers\ProductsController.cs") @'
 using KarkasLot.Api.Data;
 using KarkasLot.Api.Models;
@@ -721,6 +625,7 @@ namespace KarkasLot.Api.Controllers;
 public class ProductsController : ControllerBase
 {
     private readonly AppDbContext _context;
+
     public ProductsController(AppDbContext context) => _context = context;
 
     [HttpGet]
@@ -751,6 +656,7 @@ namespace KarkasLot.Api.Controllers;
 public class SuppliersController : ControllerBase
 {
     private readonly AppDbContext _context;
+
     public SuppliersController(AppDbContext context) => _context = context;
 
     [HttpGet]
@@ -781,10 +687,43 @@ namespace KarkasLot.Api.Controllers;
 public class LotsController : ControllerBase
 {
     private readonly AppDbContext _context;
+
     public LotsController(AppDbContext context) => _context = context;
 
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<object>>> Get() => Ok(await _context.Lots.Include(x => x.Product).Include(x => x.Supplier).OrderByDescending(x => x.CreatedAt).Select(x => new { x.Id, x.LotNo, ProductName = x.Product != null ? x.Product.Name : "", SupplierName = x.Supplier != null ? x.Supplier.Name : "", x.Amount, x.Unit, x.Status, x.ExpiryDate, x.ReceivedAt, AvailableQty = _context.StockMovements.Where(m => m.LotId == x.Id).Sum(m => m.MovementType == "IN" ? m.Qty : -m.Qty) }).ToListAsync());
+    public async Task<ActionResult<IEnumerable<object>>> Get()
+    {
+        var lots = await _context.Lots
+            .Include(x => x.Product)
+            .Include(x => x.Supplier)
+            .OrderByDescending(x => x.ReceivedAt)
+            .ToListAsync();
+
+        var result = new List<object>();
+        foreach (var lot in lots)
+        {
+            var inQty = await _context.StockMovements.Where(x => x.LotId == lot.Id && x.MovementType == "IN").SumAsync(x => x.Qty);
+            var outQty = await _context.StockMovements.Where(x => x.LotId == lot.Id && x.MovementType == "OUT").SumAsync(x => x.Qty);
+            var availableQty = inQty - outQty;
+
+            result.Add(new
+            {
+                lot.Id,
+                lot.LotNo,
+                lot.ProductId,
+                ProductName = lot.Product?.Name,
+                SupplierName = lot.Supplier?.Name,
+                lot.Amount,
+                lot.Unit,
+                lot.Status,
+                lot.ExpiryDate,
+                AvailableQty = availableQty,
+                lot.ReceivedAt
+            });
+        }
+
+        return Ok(result);
+    }
 
     [HttpPost("receipt")]
     public async Task<ActionResult> Receipt([FromBody] ReceiptRequest request)
@@ -792,12 +731,32 @@ public class LotsController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.LotNo)) return BadRequest("Lot numarası gerekli.");
         if (request.Amount <= 0) return BadRequest("Miktar sıfırdan büyük olmalı.");
         if (!await _context.Products.AnyAsync(x => x.Id == request.ProductId)) return BadRequest("Ürün bulunamadı.");
-        var lot = new Lot { LotNo = request.LotNo.Trim(), ProductId = request.ProductId, SupplierId = request.SupplierId, Amount = request.Amount, Unit = request.Unit ?? "kg", ExpiryDate = request.ExpiryDate, SourceRef = request.SourceRef, Status = "Kullanılabilir" };
+
+        var lot = new Lot
+        {
+            LotNo = request.LotNo.Trim(),
+            ProductId = request.ProductId,
+            SupplierId = request.SupplierId,
+            Amount = request.Amount,
+            Unit = request.Unit ?? "kg",
+            ExpiryDate = request.ExpiryDate,
+            SourceRef = request.SourceRef,
+            Status = "Kullanılabilir"
+        };
+
         _context.Lots.Add(lot);
         await _context.SaveChangesAsync();
-        _context.StockMovements.Add(new StockMovement { LotId = lot.Id, MovementType = "IN", Qty = lot.Amount, RelatedRef = request.SourceRef ?? "receipt" });
+
+        _context.StockMovements.Add(new StockMovement
+        {
+            LotId = lot.Id,
+            MovementType = "IN",
+            Qty = lot.Amount,
+            RelatedRef = request.SourceRef ?? "receipt"
+        });
+
         await _context.SaveChangesAsync();
-        return Ok(new { lot.Id, lot.LotNo, lot.Amount });
+        return Ok(new { lot.Id, lot.LotNo, lot.Amount, lot.Status });
     }
 }
 
@@ -818,28 +777,49 @@ namespace KarkasLot.Api.Controllers;
 public class ShipmentsController : ControllerBase
 {
     private readonly AppDbContext _context;
+
     public ShipmentsController(AppDbContext context) => _context = context;
 
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<object>>> Get() => Ok(await _context.Shipments.Include(x => x.Items).ThenInclude(x => x.Lot).OrderByDescending(x => x.CreatedAt).Select(x => new { x.Id, x.ShipmentNo, x.CustomerName, x.CreatedAt, LotSummary = string.Join(" | ", x.Items.Select(i => i.Lot!.LotNo + ": " + i.Qty + " kg")) }).ToListAsync());
+    public async Task<ActionResult<IEnumerable<object>>> Get() => Ok(await _context.Shipments
+        .Include(x => x.Items)
+        .ThenInclude(x => x.Lot)
+        .OrderByDescending(x => x.CreatedAt)
+        .Select(x => new
+        {
+            x.Id,
+            x.ShipmentNo,
+            x.CustomerName,
+            x.CreatedAt,
+            Items = x.Items.Select(i => new { i.LotId, LotNo = i.Lot!.LotNo, i.Qty })
+        })
+        .ToListAsync());
 
     [HttpPost]
     public async Task<ActionResult> Post([FromBody] ShipmentRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.ShipmentNo) || string.IsNullOrWhiteSpace(request.CustomerName)) return BadRequest("Sevk numarası ve müşteri adı gereklidir.");
-        if (request.Items.Count == 0) return BadRequest("En az bir lot eklenmelidir.");
+        if (string.IsNullOrWhiteSpace(request.ShipmentNo) || string.IsNullOrWhiteSpace(request.CustomerName))
+            return BadRequest("Sevk numarası ve müşteri adı gereklidir.");
+
+        if (request.Items.Count == 0)
+            return BadRequest("En az bir lot eklenmelidir.");
+
         var shipment = new Shipment { ShipmentNo = request.ShipmentNo, CustomerName = request.CustomerName };
         _context.Shipments.Add(shipment);
         await _context.SaveChangesAsync();
+
         foreach (var item in request.Items)
         {
-            var lot = await _context.Lots.FirstOrDefaultAsync(x => x.Id == item.LotId);
-            if (lot == null) return BadRequest($"Lot bulunamadı: {item.LotId}");
-            var available = await _context.StockMovements.Where(x => x.LotId == item.LotId).SumAsync(x => x.MovementType == "IN" ? x.Qty : -x.Qty);
-            if (item.Qty <= 0 || available < item.Qty) return BadRequest($"{lot.LotNo} için yetersiz stok.");
+            var inQty = await _context.StockMovements.Where(x => x.LotId == item.LotId && x.MovementType == "IN").SumAsync(x => x.Qty);
+            var outQty = await _context.StockMovements.Where(x => x.LotId == item.LotId && x.MovementType == "OUT").SumAsync(x => x.Qty);
+            var available = inQty - outQty;
+
+            if (item.Qty <= 0 || available < item.Qty) return BadRequest($"Lot {item.LotId} için yetersiz stok.");
+
             _context.ShipmentItems.Add(new ShipmentItem { ShipmentId = shipment.Id, LotId = item.LotId, Qty = item.Qty });
             _context.StockMovements.Add(new StockMovement { LotId = item.LotId, MovementType = "OUT", Qty = item.Qty, RelatedRef = "shipment:" + shipment.ShipmentNo });
         }
+
         await _context.SaveChangesAsync();
         return Ok(new { shipment.Id, shipment.ShipmentNo, shipment.CustomerName });
     }
@@ -847,19 +827,6 @@ public class ShipmentsController : ControllerBase
 
 public record ShipmentRequest(string ShipmentNo, string CustomerName, List<ShipmentItemRequest> Items);
 public record ShipmentItemRequest(int LotId, decimal Qty);
-'@
-Write-File (Join-Path $Api "Controllers\HealthController.cs") @'
-using Microsoft.AspNetCore.Mvc;
-
-namespace KarkasLot.Api.Controllers;
-
-[ApiController]
-[Route("api")]
-public class HealthController : ControllerBase
-{
-    [HttpGet("health")]
-    public IActionResult Health() => Ok(new { status = "ok" });
-}
 '@
 Write-File (Join-Path $Api "Controllers\CustomersController.cs") @'
 using KarkasLot.Api.Data;
@@ -876,6 +843,7 @@ namespace KarkasLot.Api.Controllers;
 public class CustomersController : ControllerBase
 {
     private readonly AppDbContext _context;
+
     public CustomersController(AppDbContext context) => _context = context;
 
     [HttpGet]
@@ -890,6 +858,84 @@ public class CustomersController : ControllerBase
         return Ok(customer);
     }
 }
+'@
+Write-File (Join-Path $Api "Controllers\RolesController.cs") @'
+using KarkasLot.Api.Data;
+using KarkasLot.Api.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
+namespace KarkasLot.Api.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+[Authorize(Roles = "Admin,Manager")]
+public class RolesController : ControllerBase
+{
+    private readonly AppDbContext _context;
+
+    public RolesController(AppDbContext context) => _context = context;
+
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<Role>>> Get() => await _context.Roles.OrderBy(x => x.Name).ToListAsync();
+}
+'@
+Write-File (Join-Path $Api "Controllers\UsersController.cs") @'
+using KarkasLot.Api.Data;
+using KarkasLot.Api.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
+namespace KarkasLot.Api.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+[Authorize(Roles = "Admin,Manager")]
+public class UsersController : ControllerBase
+{
+    private readonly AppDbContext _context;
+
+    public UsersController(AppDbContext context) => _context = context;
+
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<object>>> Get() => Ok(await _context.Users
+        .Include(x => x.UserRoles)
+        .ThenInclude(x => x.Role)
+        .Select(x => new
+        {
+            x.Id,
+            x.Username,
+            x.FullName,
+            x.Email,
+            x.IsActive,
+            Roles = x.UserRoles.Select(ur => ur.Role!.Name).ToList()
+        })
+        .OrderBy(x => x.Username)
+        .ToListAsync());
+
+    [HttpPost("assign-role")]
+    public async Task<ActionResult> AssignRole(AssignRoleRequest request)
+    {
+        var user = await _context.Users.FindAsync(request.UserId);
+        if (user == null) return NotFound("Kullanıcı bulunamadı.");
+
+        var role = await _context.Roles.FirstOrDefaultAsync(x => x.Name == request.RoleName);
+        if (role == null) return NotFound("Rol bulunamadı.");
+
+        var exists = await _context.UserRoles.AnyAsync(x => x.UserId == request.UserId && x.RoleId == role.Id);
+        if (!exists)
+        {
+            _context.UserRoles.Add(new UserRole { UserId = request.UserId, RoleId = role.Id });
+            await _context.SaveChangesAsync();
+        }
+
+        return Ok(new { message = "Rol atandı." });
+    }
+}
+
+public record AssignRoleRequest(int UserId, string RoleName);
 '@
 Write-File (Join-Path $Api "Controllers\HaccpController.cs") @'
 using KarkasLot.Api.Data;
@@ -906,6 +952,7 @@ namespace KarkasLot.Api.Controllers;
 public class HaccpController : ControllerBase
 {
     private readonly AppDbContext _context;
+
     public HaccpController(AppDbContext context) => _context = context;
 
     [HttpGet]
@@ -936,6 +983,7 @@ namespace KarkasLot.Api.Controllers;
 public class QualityController : ControllerBase
 {
     private readonly AppDbContext _context;
+
     public QualityController(AppDbContext context) => _context = context;
 
     [HttpGet("issues")]
@@ -959,6 +1007,119 @@ public class QualityController : ControllerBase
         await _context.SaveChangesAsync();
         return Ok(action);
     }
+}
+'@
+Write-File (Join-Path $Api "Controllers\InventoryController.cs") @'
+using KarkasLot.Api.Data;
+using KarkasLot.Api.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
+namespace KarkasLot.Api.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+[Authorize]
+public class InventoryController : ControllerBase
+{
+    private readonly AppDbContext _context;
+
+    public InventoryController(AppDbContext context) => _context = context;
+
+    [HttpGet("alerts")]
+    public async Task<ActionResult<IEnumerable<object>>> Alerts()
+    {
+        var lots = await _context.Lots.Include(x => x.Product).ToListAsync();
+        var result = new List<object>();
+
+        foreach (var lot in lots)
+        {
+            if (!lot.ExpiryDate.HasValue) continue;
+            var remainingDays = (lot.ExpiryDate.Value - DateTime.UtcNow).TotalDays;
+            if (remainingDays <= 7)
+            {
+                result.Add(new
+                {
+                    lot.Id,
+                    lot.LotNo,
+                    ProductName = lot.Product?.Name,
+                    ExpiryDate = lot.ExpiryDate,
+                    RemainingDays = Math.Round(remainingDays, 1)
+                });
+            }
+        }
+
+        return Ok(result);
+    }
+
+    [HttpGet("fefo")]
+    public async Task<ActionResult<IEnumerable<object>>> Fefo()
+    {
+        var lots = await _context.Lots
+            .Include(x => x.Product)
+            .Where(x => x.ExpiryDate.HasValue)
+            .OrderBy(x => x.ExpiryDate)
+            .Select(x => new
+            {
+                x.Id,
+                x.LotNo,
+                ProductName = x.Product!.Name,
+                x.ExpiryDate,
+                x.Amount,
+                x.Status
+            })
+            .ToListAsync();
+
+        return Ok(lots);
+    }
+}
+'@
+Write-File (Join-Path $Api "Controllers\ReportsController.cs") @'
+using KarkasLot.Api.Data;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
+namespace KarkasLot.Api.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+[Authorize]
+public class ReportsController : ControllerBase
+{
+    private readonly AppDbContext _context;
+
+    public ReportsController(AppDbContext context) => _context = context;
+
+    [HttpGet("stock-summary")]
+    public async Task<ActionResult<object>> StockSummary()
+    {
+        var summary = await _context.Lots
+            .Include(x => x.Product)
+            .GroupBy(x => x.ProductId)
+            .Select(g => new
+            {
+                ProductName = g.First().Product!.Name,
+                TotalQty = g.Sum(x => x.Amount)
+            })
+            .ToListAsync();
+
+        return Ok(summary);
+    }
+}
+'@
+Write-File (Join-Path $Api "Controllers\HealthController.cs") @'
+using Microsoft.AspNetCore.Mvc;
+
+namespace KarkasLot.Api.Controllers;
+
+[ApiController]
+[Route("api")]
+public class HealthController : ControllerBase
+{
+    [HttpGet("health")]
+    public IActionResult Health() => Ok(new { status = "ok" });
 }
 '@
 
@@ -996,14 +1157,32 @@ export const getRoles = () => request("/roles", { headers: { Authorization: `Bea
 export const getHaccp = () => request("/haccp", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 export const getQualityIssues = () => request("/quality/issues", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 export const getQualityActions = () => request("/quality/actions", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
-export const assignUserRole = (userId, roleName) => request("/users/assign-role", { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }, body: JSON.stringify({ userId, roleName }) });
+export const getInventoryAlerts = () => request("/inventory/alerts", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
+export const getFefo = () => request("/inventory/fefo", { headers: { Authorization: `Bearer ${localStorage.getItem("token")}` } });
 export const createReceipt = (body) => request("/lots/receipt", { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }, body: JSON.stringify(body) });
 export const createShipment = (body) => request("/shipments", { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }, body: JSON.stringify(body) });
+export const assignUserRole = (userId, roleName) => request("/users/assign-role", { method: "POST", headers: { Authorization: `Bearer ${localStorage.getItem("token")}` }, body: JSON.stringify({ userId, roleName }) });
 '@
 
 Write-File (Join-Path $Web "src\App.jsx") @'
 import { useEffect, useMemo, useState } from "react";
-import { login, getProducts, getSuppliers, getLots, getShipments, getUsers, getRoles, getHaccp, getQualityIssues, getQualityActions, assignUserRole, createReceipt, createShipment } from "./services/api";
+import {
+  login,
+  getProducts,
+  getSuppliers,
+  getLots,
+  getShipments,
+  getUsers,
+  getRoles,
+  getHaccp,
+  getQualityIssues,
+  getQualityActions,
+  getInventoryAlerts,
+  getFefo,
+  assignUserRole,
+  createReceipt,
+  createShipment
+} from "./services/api";
 import "./index.css";
 
 const defaultRoles = ["Admin", "Manager", "Warehouse", "Production", "Quality", "Accounting"];
@@ -1022,8 +1201,10 @@ function App() {
   const [haccpChecks, setHaccpChecks] = useState([]);
   const [qualityIssues, setQualityIssues] = useState([]);
   const [qualityActions, setQualityActions] = useState([]);
-  const [selectedRole, setSelectedRole] = useState("Warehouse");
+  const [alerts, setAlerts] = useState([]);
+  const [fefo, setFefo] = useState([]);
   const [selectedUserId, setSelectedUserId] = useState("");
+  const [selectedRole, setSelectedRole] = useState("Warehouse");
   const [receipt, setReceipt] = useState({ lotNo: "", productId: "", supplierId: "", amount: "", expiryDate: "", sourceRef: "" });
   const [shipment, setShipment] = useState({ shipmentNo: "", customerName: "", lotId: "", qty: "" });
 
@@ -1032,14 +1213,16 @@ function App() {
   const loadDashboard = async () => {
     if (!token) return;
     try {
-      const [p, s, l, sh, h, q, a] = await Promise.all([
+      const [p, s, l, sh, h, q, a, al, f] = await Promise.all([
         getProducts(),
         getSuppliers(),
         getLots(),
         getShipments(),
         getHaccp(),
         getQualityIssues(),
-        getQualityActions()
+        getQualityActions(),
+        getInventoryAlerts(),
+        getFefo()
       ]);
       setProducts(p);
       setSuppliers(s);
@@ -1048,6 +1231,9 @@ function App() {
       setHaccpChecks(h);
       setQualityIssues(q);
       setQualityActions(a);
+      setAlerts(al);
+      setFefo(f);
+
       if (isAdmin) {
         const u = await getUsers();
         const r = await getRoles();
@@ -1095,7 +1281,7 @@ function App() {
         sourceRef: receipt.sourceRef || null
       });
       alert("Alış kabul kaydedildi.");
-      setReceipt({ lotNo: "", productId: products[0]?.id || "", supplierId: suppliers[0]?.id || "", amount: "", expiryDate: "", sourceRef: "" });
+      setReceipt({ lotNo: "", productId: "", supplierId: "", amount: "", expiryDate: "", sourceRef: "" });
       loadDashboard();
     } catch (err) {
       alert(err.message || "Hata oluştu.");
@@ -1171,7 +1357,7 @@ function App() {
       <section className="cards">
         <div className="card"><strong>{lots.length}</strong><span>Lot</span></div>
         <div className="card"><strong>{shipments.length}</strong><span>Sevk</span></div>
-        <div className="card"><strong>{products.length}</strong><span>Ürün</span></div>
+        <div className="card"><strong>{alerts.length}</strong><span>Stok Alarmı</span></div>
       </section>
 
       <div className="grid">
@@ -1189,7 +1375,7 @@ function App() {
             </select>
             <input type="number" min="0.01" step="0.01" placeholder="Miktar" value={receipt.amount} onChange={e => setReceipt({ ...receipt, amount: e.target.value })} />
             <input type="date" value={receipt.expiryDate} onChange={e => setReceipt({ ...receipt, expiryDate: e.target.value })} />
-            <input placeholder="İrsaliye / referans" value={receipt.sourceRef} onChange={e => setReceipt({ ...receipt, sourceRef: e.target.value })} />
+            <input placeholder="Referans / irsaliye" value={receipt.sourceRef} onChange={e => setReceipt({ ...receipt, sourceRef: e.target.value })} />
             <button type="submit">Kaydet</button>
           </form>
         </div>
@@ -1214,29 +1400,44 @@ function App() {
           <h2>Lot Listesi</h2>
           <table>
             <thead>
-              <tr><th>Lot</th><th>Ürün</th><th>Mevcut</th><th>Durum</th></tr>
+              <tr><th>Lot</th><th>Ürün</th><th>Mevcut</th><th>Son Kullanma</th></tr>
             </thead>
             <tbody>
               {lots.map(lot => (
-                <tr key={lot.id}><td>{lot.lotNo}</td><td>{lot.productName}</td><td>{lot.availableQty} {lot.unit}</td><td>{lot.status}</td></tr>
+                <tr key={lot.id}><td>{lot.lotNo}</td><td>{lot.productName}</td><td>{lot.availableQty} {lot.unit}</td><td>{lot.expiryDate ? new Date(lot.expiryDate).toLocaleDateString("tr-TR") : "-"}</td></tr>
               ))}
             </tbody>
           </table>
         </section>
 
         <section className="panel">
+          <h2>FEFO / Alarm</h2>
+          <div className="mini-list">
+            <strong>Üstte kalan lotlar (FEFO):</strong>
+            {fefo.length ? fefo.slice(0, 5).map(x => <div key={x.id}>{x.lotNo} - {x.productName} - {new Date(x.expiryDate).toLocaleDateString("tr-TR")}</div>) : <div>Veri yok</div>}
+          </div>
+          <div className="mini-list">
+            <strong>Alarm listesi:</strong>
+            {alerts.length ? alerts.map(x => <div key={x.id}>{x.lotNo} - {x.productName} - {x.remainingDays} gün</div>) : <div>Alarm yok</div>}
+          </div>
+        </section>
+      </div>
+
+      <div className="two-col lower">
+        <section className="panel">
           <h2>HACCP / Kalite</h2>
           <div className="mini-list">
-            <strong>HACCP Kontrolleri:</strong>
-            {haccpChecks.length ? haccpChecks.map(x => <div key={x.id}>{x.checkType} - {x.result}</div>) : <div>Henüz kayıt yok.</div>}
+            {haccpChecks.length ? haccpChecks.map(x => <div key={x.id}>{x.checkType}: {x.result}</div>) : <div>HACCP kaydı yok.</div>}
           </div>
           <div className="mini-list">
-            <strong>Kalite Sorunları:</strong>
-            {qualityIssues.length ? qualityIssues.map(x => <div key={x.id}>{x.issueType} - {x.status}</div>) : <div>Henüz kayıt yok.</div>}
+            {qualityIssues.length ? qualityIssues.map(x => <div key={x.id}>{x.issueType}: {x.status}</div>) : <div>Kalite sorunu yok.</div>}
           </div>
+        </section>
+
+        <section className="panel">
+          <h2>Düzeltici Faaliyet</h2>
           <div className="mini-list">
-            <strong>Düzeltici Faaliyetler:</strong>
-            {qualityActions.length ? qualityActions.map(x => <div key={x.id}>{x.actionText}</div>) : <div>Henüz kayıt yok.</div>}
+            {qualityActions.length ? qualityActions.map(x => <div key={x.id}>{x.actionText}</div>) : <div>Faaliyet yok.</div>}
           </div>
         </section>
       </div>
@@ -1262,7 +1463,7 @@ button.logout { max-width: 120px; }
 .card { display: flex; flex-direction: column; gap: 8px; }
 .card strong { font-size: 34px; color: #2563eb; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 16px; margin-bottom: 20px; }
-.two-col { display: grid; grid-template-columns: 1.15fr 1fr; gap: 16px; }
+.two-col { display: grid; grid-template-columns: 1.15fr 1fr; gap: 16px; margin-bottom: 20px; }
 .admin-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; }
 .mini-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 table { width: 100%; border-collapse: collapse; }
@@ -1288,5 +1489,5 @@ if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $Root -DestinationPath $zip -Force
 
 Write-Host "Kurulum tamamlandı: $zip" -ForegroundColor Green
-Write-Host "API çalıştırmak için: cd karkaslot\backend\KarkasLot.Api; dotnet run --urls http://localhost:5159"
-Write-Host "Frontend çalıştırmak için: cd karkaslot\frontend\karkaslot-web; npm run dev"
+Write-Host "API: cd karkaslot\backend\KarkasLot.Api; dotnet run --urls http://localhost:5159"
+Write-Host "Frontend: cd karkaslot\frontend\karkaslot-web; npm run dev"
